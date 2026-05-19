@@ -1,6 +1,5 @@
 import os
-import threading
-from flask import Flask
+import asyncio
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
@@ -18,24 +17,6 @@ from telegram.ext import (
 )
 
 from telegram.error import Forbidden
-
-# =========================================================
-# ВЕБ-СЕРВЕР ДЛЯ RENDER (ЧТОБЫ БОТ НЕ ПАДАЛ С ОШИБКОЙ)
-# =========================================================
-flask_app = Flask('')
-
-@flask_app.route('/')
-def home():
-    return "Бот запущен и работает!"
-
-def run_flask():
-    # Render сам передает порт. Если его нет, берем стандартный 10000
-    port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = threading.Thread(target=run_flask)
-    t.start()
 
 # =========================
 # НАСТРОЙКИ
@@ -449,16 +430,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
 
+# =========================================================
+# ФУНКЦИЯ ДЛЯ ЗАПУСКА ПРОСТЕЙШЕГО СЕРВЕРА ВНУТРИ БОТА
+# =========================================================
+async def handle_render_ping(reader, writer):
+    """Отвечает Render 'ОК', чтобы тот видел, что порт открыт и работает"""
+    data = await reader.read(100)
+    response = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello Render"
+    writer.write(response.encode())
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+async def start_ping_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = await asyncio.start_server(handle_render_ping, '0.0.0.0', port)
+    print(f"Сервер проверки Render запущен на порту {port}")
+    async with server:
+        await server.serve_forever()
+
 # =========================
 # ЗАПУСК
 # =========================
 
 def main():
-
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-
     app.add_handler(
         MessageHandler(
             filters.TEXT | filters.PHOTO,
@@ -466,12 +464,15 @@ def main():
         )
     )
 
-    # Запускаем фоновый веб-сервер перед стартом бота
-    print("Запуск фонового веб-сервера для Render...")
-    keep_alive()
+    print("Инициализация бота...")
 
-    print("Бот запущен")
+    # Получаем текущий цикл событий asyncio
+    loop = asyncio.get_event_loop()
+    
+    # Запускаем фоновую задачу для проверки портов со стороны Render
+    loop.create_task(start_ping_server())
 
+    # Запускаем самого бота
     app.run_polling()
 
 if __name__ == "__main__":
