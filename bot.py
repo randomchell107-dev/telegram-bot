@@ -1,3 +1,6 @@
+import os
+import threading
+from flask import Flask
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
@@ -15,6 +18,24 @@ from telegram.ext import (
 )
 
 from telegram.error import Forbidden
+
+# =========================================================
+# ВЕБ-СЕРВЕР ДЛЯ RENDER (ЧТОБЫ БОТ НЕ ПАДАЛ С ОШИБКОЙ)
+# =========================================================
+flask_app = Flask('')
+
+@flask_app.route('/')
+def home():
+    return "Бот запущен и работает!"
+
+def run_flask():
+    # Render сам передает порт. Если его нет, берем стандартный 10000
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = threading.Thread(target=run_flask)
+    t.start()
 
 # =========================
 # НАСТРОЙКИ
@@ -444,6 +465,10 @@ def main():
             handle_message
         )
     )
+
+    # Запускаем фоновый веб-сервер перед стартом бота
+    print("Запуск фонового веб-сервера для Render...")
+    keep_alive()
 
     print("Бот запущен")
 
