@@ -60,12 +60,23 @@ sizes = {
 # START
 # =========================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# ОБРАБОТКА
+# =========================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # === ЗАЩИТА ОТ СООБЩЕНИЙ ИЗ КАНАЛОВ И ПУСТЫХ ЮЗЕРОВ ===
+    if not update.message or not update.effective_user:
+        return  # Просто игнорируем это обновление, бот не упадет
+    # =====================================================
 
     user_id = update.effective_user.id
 
-    authorized_users[user_id] = False
-    post_data[user_id] = {}
+    if user_id not in authorized_users:
+        authorized_users[user_id] = False
+
+    if user_id not in post_data:
+        post_data[user_id] = {}
 
     await update.message.reply_text(
         "Здравствуйте предъявите пароль администратора пожалуйста.",
