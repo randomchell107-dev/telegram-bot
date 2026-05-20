@@ -177,7 +177,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =========================
+        # =========================
     # СОЗДАНИЕ ПОСТА
     # =========================
 
@@ -213,6 +213,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         return
+
+    # === ВОТ ЭТОТ КУСОК НУЖНО ДОБАВИТЬ ДЛЯ ЗАЩИТЫ ОТ ПАДЕНИЯ ===
+    # Если данные очищены, но пользователь шлет текст/фото без нажатия кнопки "пост"
+    if "creating_post" not in post_data[user_id]:
+        keyboard = [["пост"]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text(
+            "Процесс создания поста не запущен. Нажмите кнопку «пост».",
+            reply_markup=reply_markup
+        )
+        return
+    # ========================================================
+
+    # =========================
+    # ФОТО
+    # =========================
+
 
     # =========================
     # ФОТО
