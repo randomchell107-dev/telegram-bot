@@ -22,7 +22,7 @@ from telegram.error import Forbidden
 # НАСТРОЙКИ
 # =========================
 
-TOKEN = os.environ.get("8598790012:AAH_qyLAFSDlwH9cwfVncWQlr3rGZmigDKQ")
+TOKEN = os.environ.get("BOT_TOKEN")
 
 ADMIN_PASSWORD = "1038362"
 
