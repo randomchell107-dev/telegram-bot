@@ -60,6 +60,24 @@ sizes = {
 # START
 # =========================
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Защита от пустых апдейтов или каналов на команду /start
+    if not update.message or not update.effective_user:
+        return
+
+    user_id = update.effective_user.id
+    
+    if user_id not in authorized_users:
+        authorized_users[user_id] = False
+
+    if user_id not in post_data:
+        post_data[user_id] = {}
+
+    await update.message.reply_text(
+        "Здравствуйте, предъявите пароль администратора пожалуйста.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
 # =========================
 # ОБРАБОТКА
 # =========================
@@ -69,25 +87,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_user:
         return  # Просто игнорируем это обновление, бот не упадет
     # =====================================================
-
-    user_id = update.effective_user.id
-
-    if user_id not in authorized_users:
-        authorized_users[user_id] = False
-
-    if user_id not in post_data:
-        post_data[user_id] = {}
-
-    await update.message.reply_text(
-        "Здравствуйте предъявите пароль администратора пожалуйста.",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-# =========================
-# ОБРАБОТКА
-# =========================
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
 
@@ -107,27 +106,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = "@" + update.effective_user.username
 
     try:
-
         member = await context.bot.get_chat_member(
             chat_id=CHANNEL_ID,
             user_id=user_id
         )
 
         if member.status not in ["member", "administrator", "creator"]:
-
             await update.message.reply_text(
                 f"Для использования бота подпишитесь на канал {CHANNEL_ID}"
             )
-
             return
 
     except Forbidden:
-
         await update.message.reply_text(
             "Бот не может проверить подписку.\n"
             "Добавьте бота в канал администратором."
         )
-
         return
 
     # =========================
@@ -138,66 +132,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # ДОВЕРЕННЫЕ ПОЛЬЗОВАТЕЛИ
         if username in TRUSTED_USERS:
-
             authorized_users[user_id] = True
-
             keyboard = [["пост"]]
-
-            reply_markup = ReplyKeyboardMarkup(
-                keyboard,
-                resize_keyboard=True
-            )
-
-            await update.message.reply_text(
-                "Доступ подтверждён✅"
-            )
-
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.message.reply_text("Доступ подтверждён✅")
             await update.message.reply_text(
                 "Нажмите кнопку «пост» для создания поста.",
                 reply_markup=reply_markup
             )
-
             return
 
         # ОБЫЧНЫЙ ПАРОЛЬ
         if update.message.text == ADMIN_PASSWORD:
-
             authorized_users[user_id] = True
-
             keyboard = [["пост"]]
-
-            reply_markup = ReplyKeyboardMarkup(
-                keyboard,
-                resize_keyboard=True
-            )
-
-            await update.message.reply_text(
-                "Пароль верный, можете продолжить работу."
-            )
-
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.message.reply_text("Пароль верный, можете продолжить работу.")
             await update.message.reply_text(
                 "Нажмите кнопку «пост» для создания поста.",
                 reply_markup=reply_markup
             )
-
         else:
-
-            await update.message.reply_text(
-                "Пароль неверный!"
-            )
-
+            await update.message.reply_text("Пароль неверный!")
         return
 
-        # =========================
+    # =========================
     # СОЗДАНИЕ ПОСТА
     # =========================
 
     if post_data[user_id] == {}:
-
         if update.message.text and update.message.text.lower() == "пост":
-
             post_data[user_id]["creating_post"] = True
-
             await update.message.reply_text(
                 "Заполните пост пожалуйста.\n\n"
                 "1. Отправьте фото.\n"
@@ -208,24 +173,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "6. Ссылка на куфар.",
                 reply_markup=ReplyKeyboardRemove()
             )
-
         else:
-
             keyboard = [["пост"]]
-
-            reply_markup = ReplyKeyboardMarkup(
-                keyboard,
-                resize_keyboard=True
-            )
-
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.message.reply_text(
                 "Нажмите кнопку «пост».",
                 reply_markup=reply_markup
             )
-
         return
 
-    # === ВОТ ЭТОТ КУСОК НУЖНО ДОБАВИТЬ ДЛЯ ЗАЩИТЫ ОТ ПАДЕНИЯ ===
     # Если данные очищены, но пользователь шлет текст/фото без нажатия кнопки "пост"
     if "creating_post" not in post_data[user_id]:
         keyboard = [["пост"]]
@@ -235,35 +191,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
         return
-    # ========================================================
-
-    # =========================
-    # ФОТО
-    # =========================
-
 
     # =========================
     # ФОТО
     # =========================
 
     if "photo" not in post_data[user_id]:
-
         if update.message.photo:
-
             photo = update.message.photo[-1].file_id
-
             post_data[user_id]["photo"] = photo
-
-            await update.message.reply_text(
-                "Введите главный заголовок."
-            )
-
+            await update.message.reply_text("Введите главный заголовок.")
         else:
-
-            await update.message.reply_text(
-                "Пожалуйста отправьте фото."
-            )
-
+            await update.message.reply_text("Пожалуйста отправьте фото.")
         return
 
     # =========================
@@ -271,15 +210,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # =========================
 
     if "title" not in post_data[user_id]:
-
         if update.message.text:
-
             post_data[user_id]["title"] = update.message.text
-
-            await update.message.reply_text(
-                "Введите описание."
-            )
-
+            await update.message.reply_text("Введите описание.")
         return
 
     # =========================
@@ -287,15 +220,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # =========================
 
     if "description" not in post_data[user_id]:
-
         if update.message.text:
-
             post_data[user_id]["description"] = update.message.text
-
-            await update.message.reply_text(
-                "Введите цену."
-            )
-
+            await update.message.reply_text("Введите цену.")
         return
 
     # =========================
@@ -303,20 +230,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # =========================
 
     if "price" not in post_data[user_id]:
-
         if update.message.text:
-
             price = update.message.text
-
             if "BYN" not in price.upper():
                 price = price + " BYN"
-
             post_data[user_id]["price"] = price
-
-            await update.message.reply_text(
-                "Введите размер (XS/S/M/L/XL)."
-            )
-
+            await update.message.reply_text("Введите размер (XS/S/M/L/XL).")
         return
 
     # =========================
@@ -324,25 +243,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # =========================
 
     if "size" not in post_data[user_id]:
-
         if update.message.text:
-
             size_input = update.message.text.upper()
-
             if size_input in sizes:
-
                 full_size = f"{size_input} ({sizes[size_input]})"
-
             else:
-
                 full_size = size_input
-
             post_data[user_id]["size"] = full_size
-
-            await update.message.reply_text(
-                "Впишите свою ссылку на куфар."
-            )
-
+            await update.message.reply_text("Впишите свою ссылку на куфар.")
         return
 
     # =========================
@@ -350,11 +258,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # =========================
 
     if "kufar_link" not in post_data[user_id]:
-
         if update.message.text:
-
             post_data[user_id]["kufar_link"] = update.message.text
-
             data = post_data[user_id]
 
             caption = (
@@ -366,15 +271,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             post_data[user_id]["caption"] = caption
-
-            keyboard = [
-                ["Да", "Нет"]
-            ]
-
-            reply_markup = ReplyKeyboardMarkup(
-                keyboard,
-                resize_keyboard=True
-            )
+            keyboard = [["Да", "Нет"]]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
             await update.message.reply_photo(
                 photo=data["photo"],
@@ -385,7 +283,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup
             )
-
         return
 
     # =========================
@@ -393,14 +290,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # =========================
 
     text = ""
-
     if update.message.text:
         text = update.message.text.lower()
 
     if text == "да":
-
         data = post_data[user_id]
-
         await context.bot.send_photo(
             chat_id=CHANNEL_ID,
             photo=data["photo"],
@@ -409,60 +303,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         keyboard = [["пост"]]
-
-        reply_markup = ReplyKeyboardMarkup(
-            keyboard,
-            resize_keyboard=True
-        )
-
-        await update.message.reply_text(
-            "Пост был успешно отправлен✅",
-            reply_markup=reply_markup
-        )
-
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("Пост был успешно отправлен✅", reply_markup=reply_markup)
         post_data[user_id] = {}
-
-        await update.message.reply_text(
-            "Нажмите кнопку «пост» для создания нового поста."
-        )
+        await update.message.reply_text("Нажмите кнопку «пост» для создания нового поста.")
 
     elif text == "нет":
-
         keyboard = [["пост"]]
-
-        reply_markup = ReplyKeyboardMarkup(
-            keyboard,
-            resize_keyboard=True
-        )
-
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         post_data[user_id] = {}
-
-        await update.message.reply_text(
-            "Отправка отменена.",
-            reply_markup=reply_markup
-        )
-
+        await update.message.reply_text("Отправка отменена.", reply_markup=reply_markup)
     else:
-
-        keyboard = [
-            ["Да", "Нет"]
-        ]
-
-        reply_markup = ReplyKeyboardMarkup(
-            keyboard,
-            resize_keyboard=True
-        )
-
-        await update.message.reply_text(
-            "Нажмите кнопку Да или Нет.",
-            reply_markup=reply_markup
-        )
+        keyboard = [["Да", "Нет"]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("Нажмите кнопку Да или Нет.", reply_markup=reply_markup)
 
 # =========================================================
 # ФУНКЦИЯ ДЛЯ ЗАПУСКА ПРОСТЕЙШЕГО СЕРВЕРА ВНУТРИ БОТА
 # =========================================================
 async def handle_render_ping(reader, writer):
-    """Отвечает Render 'ОК', чтобы тот видел, что порт открыт и работает"""
     data = await reader.read(100)
     response = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello Render"
     writer.write(response.encode())
@@ -493,14 +352,8 @@ def main():
     )
 
     print("Инициализация бота...")
-
-    # Получаем текущий цикл событий asyncio
     loop = asyncio.get_event_loop()
-    
-    # Запускаем фоновую задачу для проверки портов со стороны Render
     loop.create_task(start_ping_server())
-
-    # Запускаем самого бота
     app.run_polling()
 
 if __name__ == "__main__":
