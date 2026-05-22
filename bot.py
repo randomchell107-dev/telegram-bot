@@ -15,7 +15,6 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-from telegram.error import Forbidden
 
 # =========================
 # НАСТРОЙКИ
@@ -91,6 +90,14 @@ async def show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE, data,
 # ЛОГИКА БОТА
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    username = "@" + update.effective_user.username if update.effective_user.username else ""
+    if username in TRUSTED_USERS:
+        await update.message.reply_text(
+            "Добро пожаловать обратно! Доступ подтверждён автоматически✅", 
+            reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True)
+        )
+        return MENU
+        
     await update.message.reply_text(
         "Здравствуйте, предъявите пароль администратора пожалуйста.",
         reply_markup=ReplyKeyboardRemove()
@@ -99,32 +106,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    username = "@" + update.effective_user.username if update.effective_user.username else ""
-    
-    if username in TRUSTED_USERS or text == ADMIN_PASSWORD:
-        try:
-            member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=update.effective_user.id)
-            if member.status not in ["member", "administrator", "creator"]:
-                await update.message.reply_text(f"Для использования бота подпишитесь на канал {CHANNEL_ID}")
-                return PASSWORD
-        except Forbidden:
-            await update.message.reply_text("Добавьте бота в канал администратором.")
-            return PASSWORD
-
+    if text == ADMIN_PASSWORD:
         await update.message.reply_text(
             "Доступ подтверждён✅", 
             reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True)
         )
         return MENU
     else:
-        await update.message.reply_text("Пароль неверный!")
+        await update.message.reply_text("Пароль неверный! Попробуйте ещё раз:")
         return PASSWORD
 
 async def start_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_posts[user_id] = {"photos": []}
     await update.message.reply_text(
-        "Заполните пост пожалуйста.\n\nШаг 1: Отправьте первое фото товара:",
+        "Заполните пост пожалуйста.\n\nШаг 1: Отправьте ОДНО (главное) фото товара. Остальные можно будет добавить при редактировании.",
         reply_markup=ReplyKeyboardRemove()
     )
     return PHOTO
@@ -138,7 +134,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_id = update.message.photo[-1].file_id
     user_posts[user_id]["photos"] = [photo_id]
     
-    await update.message.reply_text("Фото добавлено📸\n\nШаг 2: Введите главный заголовок вещи.")
+    await update.message.reply_text("Главное фото добавлено📸\n\nШаг 2: Введите главный заголовок вещи.")
     return TITLE
 
 async def handle_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -183,9 +179,6 @@ async def handle_legit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_kufar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not update.message.text:
-        return KUFAR
-        
     user_posts[user_id]["kufar_link"] = update.message.text.strip()
     await show_preview(update, context, user_posts[user_id], text_prefix="Вот так будет выглядеть готовый пост:\n\n")
     return FINAL_MENU
@@ -217,7 +210,7 @@ async def handle_final_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif action == "редактировать":
         await update.message.reply_text(
-            "Что нужно изменить?", 
+            "Что нужно изменить? Чтобы ДОБАВИТЬ еще фотографии к посту, выберите пункт 'Фото'.", 
             reply_markup=ReplyKeyboardMarkup(edit_menu_keyboard, resize_keyboard=True)
         )
         return EDIT_CHOICE
@@ -229,7 +222,7 @@ async def handle_final_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MENU
     else:
-        await update.message.reply_text("Используйте кнопки: Да, Редактировать или Отмена.")
+        await update.message.reply_text("Используйте кнопки на клавиатуре: Да, Редактировать или Отмена.")
         return FINAL_MENU
 
 async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,7 +235,7 @@ async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if text in fields_map:
         context.user_data["edit_field"] = fields_map[text]
         if text == "фото":
-            await update.message.reply_text("Отправьте новую фотографию (или несколько по одной для добавления):", reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text("Отправьте ЕЩЁ ОДНО фото для добавления в пост (отправляйте по одному):", reply_markup=ReplyKeyboardRemove())
         elif text == "размер":
             await update.message.reply_text("Выберите новый размер:", reply_markup=ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True))
         elif text == "легит":
@@ -262,12 +255,13 @@ async def handle_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message.photo:
             await update.message.reply_text("Пожалуйста, отправьте фото.")
             return EDIT_FIELD
-        # Позволяет добавлять новые фото к существующим в режиме редактирования
         photo_id = update.message.photo[-1].file_id
-        if "photos" not in user_posts[user_id]:
-            user_posts[user_id]["photos"] = []
         user_posts[user_id]["photos"].append(photo_id)
-        await update.message.reply_text(f"Фото добавлено! Всего в посте: {len(user_posts[user_id]['photos'])} шт. Отправьте ещё или введите любой текст для возврата.")
+        
+        await update.message.reply_text(
+            f"Фото добавлено! Всего в посте фоток: {len(user_posts[user_id]['photos'])} шт.\n"
+            "Вы можете отправить ЕЩЁ ОДНО фото или отправить команду /done , чтобы завершить редактирование картинок."
+        )
         return EDIT_FIELD
     else:
         text = update.message.text.strip()
@@ -277,7 +271,12 @@ async def handle_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = f"{text.upper()} ({SIZES[text.upper()]})" if text.upper() in SIZES else text
         user_posts[user_id][field] = text
 
-    await show_preview(update, context, user_posts[user_id], text_prefix="Изменения сохранены! Вариант поста:\n\n")
+    await show_preview(update, context, user_posts[user_id], text_prefix="Изменения сохранены!\n\n")
+    return FINAL_MENU
+
+async def stop_photo_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    await show_preview(update, context, user_posts[user_id], text_prefix="Редактирование фото завершено!\n\n")
     return FINAL_MENU
 
 # =========================================================
@@ -325,6 +324,7 @@ async def main():
             FINAL_MENU: [MessageHandler(msg_filter, handle_final_menu)],
             EDIT_CHOICE: [MessageHandler(msg_filter, handle_edit_choice)],
             EDIT_FIELD: [
+                CommandHandler("done", stop_photo_edit),
                 MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO, handle_edit_field),
                 MessageHandler(msg_filter, handle_edit_field)
             ],
