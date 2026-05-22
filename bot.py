@@ -9,10 +9,11 @@ from telegram import (
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
-    MessageHandler,
-    filters,
-    ContextTypes,
     CommandHandler,
+    MessageHandler,
+    ConversationHandler,
+    filters,
+    ContextTypes
 )
 from telegram.error import Forbidden
 
@@ -23,23 +24,13 @@ TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_PASSWORD = "1038362"
 CHANNEL_ID = "@popochkashop"
 
-TRUSTED_USERS = [
-    "@popochka17",
-    "@Kirik_o0"
-]
+TRUSTED_USERS = ["@popochka17", "@Kirik_o0"]
 
-# =========================
-# ПАМЯТЬ БОТА
-# =========================
-authorized_users = {}
-post_data = {}
-
-# Глобальные буферы для склейки альбомов вручную (самый надежный метод)
-album_buffers = {}
-album_tasks = {}
+# Состояния автомата
+PASSWORD, MENU, PHOTO, TITLE, DESCRIPTION, PRICE, SIZE, LEGIT, KUFAR, FINAL_MENU, EDIT_CHOICE, EDIT_FIELD = range(12)
 
 # Справочник размеров
-sizes = {
+SIZES = {
     "XS": "140см",
     "S": "150см",
     "M": "160см",
@@ -57,6 +48,8 @@ edit_menu_keyboard = [
     ["Куфар"]
 ]
 
+user_posts = {}
+
 def build_caption(data):
     return (
         f"<b><i>{data.get('title', 'Без заголовка')}</i></b>\n\n"
@@ -67,27 +60,10 @@ def build_caption(data):
         f"✍️ <b>Писать ➡️</b> {data.get('kufar_link', 'Нет ссылки')}"
     )
 
-# =========================
-# START
-# =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.effective_user:
-        return
-    user_id = update.effective_user.id
-    authorized_users[user_id] = False
-    post_data[user_id] = {"step": "password"}
-    await update.message.reply_text(
-        "Здравствуйте, предъявите пароль администратора пожалуйста.",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-# =========================
-# ФУНКЦИЯ ПРЕДПРОСМОТРА
-# =========================
-async def show_preview(user_id, context: ContextTypes.DEFAULT_TYPE, chat_id, text_prefix=""):
-    data = post_data[user_id]
+async def show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE, data, text_prefix=""):
+    chat_id = update.effective_chat.id
     caption = build_caption(data)
-    post_data[user_id]["caption"] = caption
+    data["caption"] = caption
     
     text_msg = f"{text_prefix}{caption}\n\nВы подтверждаете отправку?"
     
@@ -98,235 +74,205 @@ async def show_preview(user_id, context: ContextTypes.DEFAULT_TYPE, chat_id, tex
         await context.bot.send_media_group(chat_id=chat_id, media=media)
         await context.bot.send_message(
             chat_id=chat_id, 
-            text="Выберите действие на клавиатуре:", 
+            text="Выберите действие:", 
             reply_markup=ReplyKeyboardMarkup(final_keyboard, resize_keyboard=True)
         )
     else:
-        photo_to_send = data["photos"][0] if data.get("photos") else "AgACAgIAAxkBAAMZ..."
+        photo = data["photos"][0] if data.get("photos") else "AgACAgIAAxkBAAMZ..."
         await context.bot.send_photo(
             chat_id=chat_id,
-            photo=photo_to_send,
+            photo=photo,
             caption=text_msg,
             parse_mode=ParseMode.HTML,
             reply_markup=ReplyKeyboardMarkup(final_keyboard, resize_keyboard=True)
         )
 
 # =========================
-# НАКОПИТЕЛЬ И СБОРЩИК МЕДИА
+#ЛОГИКА СТАРТА И ОПРОСА
 # =========================
-async def collect_album_photos(user_id, context: ContextTypes.DEFAULT_TYPE, chat_id, is_editing=False):
-    # Ждем 1.5 секунды, пока Телеграм дошлет все картинки из пачки
-    await asyncio.sleep(1.5)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Здравствуйте, предъявите пароль администратора пожалуйста.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return PASSWORD
+
+async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    username = "@" + update.effective_user.username if update.effective_user.username else ""
     
-    photos = album_buffers.get(user_id, []).copy()
-    album_buffers[user_id] = []
-    
-    if user_id in album_tasks:
-        del album_tasks[user_id]
-        
-    if not photos:
-        return
+    if username in TRUSTED_USERS or text == ADMIN_PASSWORD:
+        try:
+            member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=update.effective_user.id)
+            if member.status not in ["member", "administrator", "creator"]:
+                await update.message.reply_text(f"Для использования бота подпишитесь на канал {CHANNEL_ID}")
+                return PASSWORD
+        except Forbidden:
+            await update.message.reply_text("Добавьте бота в канал администратором.")
+            return PASSWORD
 
-    if is_editing:
-        post_data[user_id]["photos"] = photos
-        post_data[user_id]["step"] = "final_menu"
-        await show_preview(user_id, context, chat_id, text_prefix="Фото успешно обновлены! Вот новый вариант:\n\n")
-    else:
-        post_data[user_id]["photos"] = photos
-        post_data[user_id]["step"] = "step_title"
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"Фото успешно добавлены📸 Всего: {len(photos)}\n\nШаг 2: Введите главный заголовок вещи."
-        )
-
-# =========================
-# ГЛАВНЫЙ ОБРАБОТЧИК
-# =========================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.effective_user:
-        return
-
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    text = update.message.text.strip() if update.message.text else ""
-
-    # Если пришли фотографии
-    if update.message.photo:
-        current_step = post_data.get(user_id, {}).get("step", "password")
-        if current_step in ["step_photo", "edit_photo"]:
-            if user_id not in album_buffers:
-                album_buffers[user_id] = []
-            album_buffers[user_id].append(update.message.photo[-1].file_id)
-            
-            if user_id not in album_tasks:
-                is_edit_mode = (current_step == "edit_photo")
-                album_tasks[user_id] = asyncio.create_task(
-                    collect_album_photos(user_id, context, chat_id, is_editing=is_edit_mode)
-                )
-            return
-        else:
-            await update.message.reply_text("Сейчас не время для отправки фото.")
-            return
-
-    # Защита от пустых апдейтов (например, превью ссылок)
-    if not text:
-        return
-
-    # Кнопка глобального сброса/старта
-    if text.lower() == "пост":
-        post_data[user_id] = {"step": "step_photo"}
-        album_buffers[user_id] = []
-        if user_id in album_tasks:
-            album_tasks[user_id].cancel()
-            del album_tasks[user_id]
         await update.message.reply_text(
-            "Заполните пост пожалуйста.\n\nШаг 1: Отправьте фото товара (можно одну или сразу несколько).",
-            reply_markup=ReplyKeyboardRemove()
+            "Доступ подтверждён✅", 
+            reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True)
         )
-        return
+        return MENU
+    else:
+        await update.message.reply_text("Пароль неверный!")
+        return PASSWORD
 
-    current_step = post_data.get(user_id, {}).get("step", "password")
+async def start_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_posts[user_id] = {"photos": []}
+    await update.message.reply_text(
+        "Заполните пост пожалуйста.\n\nШаг 1: Отправьте ОДНУ фотографию товара:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return PHOTO
 
-    # 1. АВТОРИЗАЦИЯ
-    if current_step == "password":
-        username = "@" + update.effective_user.username if update.effective_user.username else ""
-        if username in TRUSTED_USERS or text == ADMIN_PASSWORD:
-            authorized_users[user_id] = True
-            post_data[user_id]["step"] = "menu"
-            await update.message.reply_text(
-                "Доступ подтверждён✅", 
-                reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True)
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not update.message.photo:
+        await update.message.reply_text("Пожалуйста, отправьте именно картинку.")
+        return PHOTO
+        
+    photo_id = update.message.photo[-1].file_id
+    user_posts[user_id]["photos"] = [photo_id]
+    
+    await update.message.reply_text("Фото успешно добавлено📸\n\nШаг 2: Введите главный заголовок вещи.")
+    return TITLE
+
+async def handle_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_posts[user_id]["title"] = update.message.text.strip()
+    await update.message.reply_text("Шаг 3: Введите описание вещи.")
+    return DESCRIPTION
+
+async def handle_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_posts[user_id]["description"] = update.message.text.strip()
+    await update.message.reply_text("Шаг 4: Введите цену.")
+    return PRICE
+
+async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    if "BYN" not in text.upper():
+        text = text + " BYN"
+    user_posts[user_id]["price"] = text
+    await update.message.reply_text(
+        "Шаг 5: Выберите размер вещи:", 
+        reply_markup=ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True)
+    )
+    return SIZE
+
+async def handle_size(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip().upper()
+    user_posts[user_id]["size"] = f"{text} ({SIZES[text]})" if text in SIZES else text
+    await update.message.reply_text(
+        "Шаг 6: Легит? (Выберите на кнопках)", 
+        reply_markup=ReplyKeyboardMarkup(legit_keyboard, resize_keyboard=True)
+    )
+    return LEGIT
+
+async def handle_legit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_posts[user_id]["legit"] = update.message.text.strip()
+    await update.message.reply_text("Шаг 7: Впишите ссылку на Куфар.", reply_markup=ReplyKeyboardRemove())
+    return KUFAR
+
+async def handle_kufar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not update.message.text:
+        return KUFAR
+        
+    user_posts[user_id]["kufar_link"] = update.message.text.strip()
+    await show_preview(update, context, user_posts[user_id], text_prefix="Вот так будет выглядеть готовый пост:\n\n")
+    return FINAL_MENU
+
+# =========================
+# УПРАВЛЕНИЕ ПУБЛИКАЦИЕЙ
+# =========================
+async def handle_final_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    action = update.message.text.strip().lower()
+    data = user_posts.get(user_id)
+    
+    if action == "да":
+        if len(data.get("photos", [])) > 1:
+            media = [InputMediaPhoto(media=img) for img in data["photos"]]
+            media[0].caption = data["caption"]
+            media[0].parse_mode = ParseMode.HTML
+            await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
+        else:
+            await context.bot.send_photo(
+                chat_id=CHANNEL_ID, photo=data["photos"][0], 
+                caption=data["caption"], parse_mode=ParseMode.HTML
             )
+        await update.message.reply_text(
+            "Пост отправлен в канал!✅", 
+            reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True)
+        )
+        return MENU
+        
+    elif action == "редактировать":
+        await update.message.reply_text(
+            "Что нужно изменить?", 
+            reply_markup=ReplyKeyboardMarkup(edit_menu_keyboard, resize_keyboard=True)
+        )
+        return EDIT_CHOICE
+        
+    elif action == "отмена":
+        await update.message.reply_text(
+            "Создание поста отменено.", 
+            reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True)
+        )
+        return MENU
+    else:
+        await update.message.reply_text("Используйте кнопки: Да, Редактировать или Отмена.")
+        return FINAL_MENU
+
+async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip().lower()
+    fields_map = {
+        "фото": "photos", "заголовок": "title", "описание": "description",
+        "цена": "price", "размер": "size", "легит": "legit", "куфар": "kufar_link"
+    }
+    
+    if text in fields_map:
+        context.user_data["edit_field"] = fields_map[text]
+        if text == "фото":
+            await update.message.reply_text("Отправьте новую фотографию товара:", reply_markup=ReplyKeyboardRemove())
+        elif text == "размер":
+            await update.message.reply_text("Выберите новый размер:", reply_markup=ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True))
+        elif text == "легит":
+            await update.message.reply_text("Выберите статус проверки:", reply_markup=ReplyKeyboardMarkup(legit_keyboard, resize_keyboard=True))
         else:
-            await update.message.reply_text("Пароль неверный!")
-        return
+            await update.message.reply_text(f"Введите новое значение для поля [{text}]:", reply_markup=ReplyKeyboardRemove())
+        return EDIT_FIELD
+    else:
+        await update.message.reply_text("Выберите пункт на клавиатуре.", reply_markup=ReplyKeyboardMarkup(edit_menu_keyboard, resize_keyboard=True))
+        return EDIT_CHOICE
 
-    # Проверка подписки
-    try:
-        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        if member.status not in ["member", "administrator", "creator"]:
-            await update.message.reply_text(f"Для использования бота подпишитесь на канал {CHANNEL_ID}")
-            return
-    except Forbidden:
-        await update.message.reply_text("Добавьте бота в канал администратором.")
-        return
-
-    # 2. АНКЕТА ЗАПОЛНЕНИЯ ПОСТА
-    if current_step == "step_photo":
-        await update.message.reply_text("Пожалуйста, отправьте фотографии товара для Шага 1.")
-        return
-        
-    elif current_step == "step_title":
-        post_data[user_id]["title"] = text
-        post_data[user_id]["step"] = "step_description"
-        await update.message.reply_text("Шаг 3: Введите описание вещи.")
-        return
-        
-    elif current_step == "step_description":
-        post_data[user_id]["description"] = text
-        post_data[user_id]["step"] = "step_price"
-        await update.message.reply_text("Шаг 4: Введите цену.")
-        return
-        
-    elif current_step == "step_price":
-        if "BYN" not in text.upper():
-            text = text + " BYN"
-        post_data[user_id]["price"] = text
-        post_data[user_id]["step"] = "step_size"
-        await update.message.reply_text("Шаг 5: Выберите размер вещи.", reply_markup=ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True))
-        return
-        
-    elif current_step == "step_size":
-        size_input = text.upper()
-        post_data[user_id]["size"] = f"{size_input} ({sizes[size_input]})" if size_input in sizes else size_input
-        post_data[user_id]["step"] = "step_legit"
-        await update.message.reply_text("Шаг 6: Легит? (Выберите на кнопках ниже)", reply_markup=ReplyKeyboardMarkup(legit_keyboard, resize_keyboard=True))
-        return
-        
-    elif current_step == "step_legit":
-        post_data[user_id]["legit"] = text
-        post_data[user_id]["step"] = "step_kufar"
-        await update.message.reply_text("Шаг 7: Впишите ссылку на Куфар.", reply_markup=ReplyKeyboardRemove())
-        return
-        
-    elif current_step == "step_kufar":
-        post_data[user_id]["kufar_link"] = text
-        post_data[user_id]["step"] = "final_menu"
-        await show_preview(user_id, context, chat_id, text_prefix="Вот так будет выглядеть готовый пост:\n\n")
-        return
-
-    # 3. ВЫБОР ИЗМЕНЯЕМОГО ПОЛЯ
-    elif current_step == "waiting_edit_choice":
-        fields_map = {
-            "фото": "edit_photo", "заголовок": "title", "описание": "description",
-            "цена": "price", "размер": "size", "легит": "legit", "куфар": "kufar_link"
-        }
-        chosen = text.lower()
-        if chosen in fields_map:
-            field_target = fields_map[chosen]
-            if field_target == "edit_photo":
-                post_data[user_id]["step"] = "edit_photo"
-                album_buffers[user_id] = []
-                await update.message.reply_text("Отправьте новое фото или пачку фотографий товара:", reply_markup=ReplyKeyboardRemove())
-            else:
-                post_data[user_id]["step"] = f"edit_field_{field_target}"
-                if chosen == "размер":
-                    await update.message.reply_text("Выберите новый размер вещи:", reply_markup=ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True))
-                elif chosen == "легит":
-                    await update.message.reply_text("Выберите новый статус проверки:", reply_markup=ReplyKeyboardMarkup(legit_keyboard, resize_keyboard=True))
-                else:
-                    await update.message.reply_text(f"Введите новое значение для поля [{chosen}]:", reply_markup=ReplyKeyboardRemove())
-        else:
-            await update.message.reply_text("Используйте кнопки для выбора поля.", reply_markup=ReplyKeyboardMarkup(edit_menu_keyboard, resize_keyboard=True))
-        return
-
-    # 4. СОХРАНЕНИЕ РЕДАКТИРУЕМОГО ПОЛЯ
-    elif current_step.startswith("edit_field_"):
-        field = current_step.replace("edit_field_", "")
+async def handle_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    field = context.user_data.get("edit_field")
+    
+    if field == "photos":
+        if not update.message.photo:
+            await update.message.reply_text("Пожалуйста, отправьте фото.")
+            return EDIT_FIELD
+        user_posts[user_id]["photos"] = [update.message.photo[-1].file_id]
+    else:
+        text = update.message.text.strip()
         if field == "price" and "BYN" not in text.upper():
             text = text + " BYN"
         elif field == "size":
-            text = f"{text.upper()} ({sizes[text.upper()]})" if text.upper() in sizes else text
-            
-        post_data[user_id][field] = text
-        post_data[user_id]["step"] = "final_menu"
-        await show_preview(user_id, context, chat_id, text_prefix="Пункт изменен! Новый вариант:\n\n")
-        return
+            text = f"{text.upper()} ({SIZES[text.upper()]})" if text.upper() in SIZES else text
+        user_posts[user_id][field] = text
 
-    # 5. МЕНЮ ПОДТВЕРЖДЕНИЯ
-    elif current_step == "final_menu":
-        action = text.lower()
-        if action == "да":
-            data = post_data[user_id]
-            if len(data.get("photos", [])) > 1:
-                media = [InputMediaPhoto(media=img) for img in data["photos"]]
-                media[0].caption = data["caption"]
-                media[0].parse_mode = ParseMode.HTML
-                await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
-            else:
-                await context.bot.send_photo(
-                    chat_id=CHANNEL_ID, photo=data["photos"][0], 
-                    caption=data["caption"], parse_mode=ParseMode.HTML
-                )
-            await update.message.reply_text("Пост отправлен в канал!✅", reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True))
-            post_data[user_id] = {"step": "menu"}
-            
-        elif action == "редактировать":
-            post_data[user_id]["step"] = "waiting_edit_choice"
-            await update.message.reply_text("Что нужно изменить?", reply_markup=ReplyKeyboardMarkup(edit_menu_keyboard, resize_keyboard=True))
-            
-        elif action in ["отмена", "нет"]:
-            post_data[user_id] = {"step": "menu"}
-            await update.message.reply_text("Создание поста отменено.", reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True))
-        else:
-            await update.message.reply_text("Используйте кнопки: Да, Редактировать или Отмена.", reply_markup=ReplyKeyboardMarkup(final_keyboard, resize_keyboard=True))
-        return
-
-    # Если мы находимся в основном меню и прилетел неизвестный текст
-    await update.message.reply_text(
-        "Для создания публикации нажмите кнопку «пост».", 
-        reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True)
-    )
+    await show_preview(update, context, user_posts[user_id], text_prefix="Пункт успешно изменен! Новый вариант:\n\n")
+    return FINAL_MENU
 
 # =========================================================
 # СЕРВЕР RENDER PING
@@ -349,16 +295,41 @@ async def start_ping_server():
         await server.serve_forever()
 
 # =========================================================
-# ОСНОВНОЙ ЗАПУСК
+# ЗАПУСК
 # =========================================================
 async def main():
     if not TOKEN:
+        print("Ошибка: BOT_TOKEN не задан!")
         return
 
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, handle_message))
+    # Изолированный фильтр приватных сообщений без команд
+    msg_filter = filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            PASSWORD: [MessageHandler(msg_filter, handle_password)],
+            MENU: [MessageHandler(filters.ChatType.PRIVATE & filters.Text(["пост", "Пост"]), start_post)],
+            PHOTO: [MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO, handle_photo)],
+            TITLE: [MessageHandler(msg_filter, handle_title)],
+            DESCRIPTION: [MessageHandler(msg_filter, handle_description)],
+            PRICE: [MessageHandler(msg_filter, handle_price)],
+            SIZE: [MessageHandler(msg_filter, handle_size)],
+            LEGIT: [MessageHandler(msg_filter, handle_legit)],
+            KUFAR: [MessageHandler(filters.ChatType.PRIVATE & (filters.TEXT | filters.StatusUpdate) & ~filters.COMMAND, handle_kufar)],
+            FINAL_MENU: [MessageHandler(msg_filter, handle_final_menu)],
+            EDIT_CHOICE: [MessageHandler(msg_filter, handle_edit_choice)],
+            EDIT_FIELD: [
+                MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO, handle_edit_field),
+                MessageHandler(msg_filter, handle_edit_field)
+            ],
+        },
+        fallbacks=[CommandHandler("start", start)],
+    )
+
+    app.add_handler(conv_handler)
 
     await app.initialize()
     await app.start()
