@@ -33,7 +33,10 @@ TRUSTED_USERS = [
 # =========================
 authorized_users = {}
 post_data = {}
-processed_albums = set()  # Чтобы не обрабатывать один альбом по 10 раз
+
+# Глобальные буферы для склейки альбомов вручную (самый надежный метод)
+album_buffers = {}
+album_tasks = {}
 
 # Справочник размеров
 sizes = {
@@ -109,60 +112,35 @@ async def show_preview(user_id, context: ContextTypes.DEFAULT_TYPE, chat_id, tex
         )
 
 # =========================
-# ОБРАБОТЧИК ДЛЯ СБОРКИ АЛЬБОМОВ
+# НАКОПИТЕЛЬ И СБОРЩИК МЕДИА
 # =========================
-async def handle_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.effective_user:
-        return
+async def collect_album_photos(user_id, context: ContextTypes.DEFAULT_TYPE, chat_id, is_editing=False):
+    # Ждем 1.5 секунды, пока Телеграм дошлет все картинки из пачки
+    await asyncio.sleep(1.5)
     
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    current_step = post_data.get(user_id, {}).get("step")
-
-    # Собираем фотки только если бот их ждёт
-    if current_step not in ["step_photo", "edit_photo"]:
+    photos = album_buffers.get(user_id, []).copy()
+    album_buffers[user_id] = []
+    
+    if user_id in album_tasks:
+        del album_tasks[user_id]
+        
+    if not photos:
         return
 
-    # Проверяем, если это альбом (несколько фото)
-    if update.message.media_group_id:
-        album_id = update.message.media_group_id
-        if album_id in processed_albums:
-            return  # Игнорируем дублирующие апдейты от одной пачки фото
-        processed_albums.add(album_id)
-        
-        await asyncio.sleep(1.0) # Даем время всем картинкам долететь
-        
-        # Забираем все фото из этого альбома, которые успели прийти в кэш телеграма
-        updates = context.application.match_types
-        media_messages = [update.message]
-        
-        # Собираем file_id самых больших версий фоток
-        photos = []
-        if current_step == "edit_photo":
-            # При редактировании просто берём фотки из текущего сообщения
-            photos.append(update.message.photo[-1].file_id)
-        else:
-            # Для нового поста ищем все фото группы
-            photos.append(update.message.photo[-1].file_id)
-            
+    if is_editing:
         post_data[user_id]["photos"] = photos
-    else:
-        # Если прислали всего одну фотку
-        post_data[user_id]["photos"] = [update.message.photo[-1].file_id]
-
-    # Переключаем шаги в зависимости от режима
-    if current_step == "edit_photo":
         post_data[user_id]["step"] = "final_menu"
-        await show_preview(user_id, context, chat_id, text_prefix="Фото обновлено! Вот новый вариант:\n\n")
+        await show_preview(user_id, context, chat_id, text_prefix="Фото успешно обновлены! Вот новый вариант:\n\n")
     else:
+        post_data[user_id]["photos"] = photos
         post_data[user_id]["step"] = "step_title"
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"Фото успешно добавлены📸 (Получено: {len(post_data[user_id]['photos'])} шт.)\n\nШаг 2: Введите главный заголовок вещи."
+            text=f"Фото успешно добавлены📸 Всего: {len(photos)}\n\nШаг 2: Введите главный заголовок вещи."
         )
 
 # =========================
-# ГЛАВНЫЙ ТЕКСТОВЫЙ ОБРАБОТЧИК
+# ГЛАВНЫЙ ОБРАБОТЧИК
 # =========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_user:
@@ -172,22 +150,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text.strip() if update.message.text else ""
 
-    # Если прилетело обновление без текста (например, просто превью ссылки), игнорируем его
+    # Если пришли фотографии
+    if update.message.photo:
+        current_step = post_data.get(user_id, {}).get("step", "password")
+        if current_step in ["step_photo", "edit_photo"]:
+            if user_id not in album_buffers:
+                album_buffers[user_id] = []
+            album_buffers[user_id].append(update.message.photo[-1].file_id)
+            
+            if user_id not in album_tasks:
+                is_edit_mode = (current_step == "edit_photo")
+                album_tasks[user_id] = asyncio.create_task(
+                    collect_album_photos(user_id, context, chat_id, is_editing=is_edit_mode)
+                )
+            return
+        else:
+            await update.message.reply_text("Сейчас не время для отправки фото.")
+            return
+
+    # Защита от пустых апдейтов (например, превью ссылок)
     if not text:
         return
 
-    # Защита от дублирования команд (чтобы кнопки не залипали)
+    # Кнопка глобального сброса/старта
     if text.lower() == "пост":
         post_data[user_id] = {"step": "step_photo"}
+        album_buffers[user_id] = []
+        if user_id in album_tasks:
+            album_tasks[user_id].cancel()
+            del album_tasks[user_id]
         await update.message.reply_text(
-            "Заполните пост пожалуйста.\n\nШаг 1: Отправьте фото товара (можно одну или сразу несколько!).",
+            "Заполните пост пожалуйста.\n\nШаг 1: Отправьте фото товара (можно одну или сразу несколько).",
             reply_markup=ReplyKeyboardRemove()
         )
         return
 
     current_step = post_data.get(user_id, {}).get("step", "password")
 
-    # 1. ПРОВЕРКА АВТОРИЗАЦИИ
+    # 1. АВТОРИЗАЦИЯ
     if current_step == "password":
         username = "@" + update.effective_user.username if update.effective_user.username else ""
         if username in TRUSTED_USERS or text == ADMIN_PASSWORD:
@@ -201,7 +201,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Пароль неверный!")
         return
 
-    # Проверка подписки для авторизованных
+    # Проверка подписки
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         if member.status not in ["member", "administrator", "creator"]:
@@ -211,9 +211,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Добавьте бота в канал администратором.")
         return
 
-    # 2. ПОШАГОВАЯ АНКЕТА
+    # 2. АНКЕТА ЗАПОЛНЕНИЯ ПОСТА
     if current_step == "step_photo":
-        await update.message.reply_text("Пожалуйста, отправьте именно фотографии для Шага 1.")
+        await update.message.reply_text("Пожалуйста, отправьте фотографии товара для Шага 1.")
         return
         
     elif current_step == "step_title":
@@ -255,7 +255,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_preview(user_id, context, chat_id, text_prefix="Вот так будет выглядеть готовый пост:\n\n")
         return
 
-    # 3. ВЫБОР ПОЛЯ ДЛЯ РЕДАКТИРОВАНИЯ
+    # 3. ВЫБОР ИЗМЕНЯЕМОГО ПОЛЯ
     elif current_step == "waiting_edit_choice":
         fields_map = {
             "фото": "edit_photo", "заголовок": "title", "описание": "description",
@@ -266,6 +266,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             field_target = fields_map[chosen]
             if field_target == "edit_photo":
                 post_data[user_id]["step"] = "edit_photo"
+                album_buffers[user_id] = []
                 await update.message.reply_text("Отправьте новое фото или пачку фотографий товара:", reply_markup=ReplyKeyboardRemove())
             else:
                 post_data[user_id]["step"] = f"edit_field_{field_target}"
@@ -279,7 +280,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Используйте кнопки для выбора поля.", reply_markup=ReplyKeyboardMarkup(edit_menu_keyboard, resize_keyboard=True))
         return
 
-    # 4. ДИНАМИЧЕСКОЕ ИЗМЕНЕНИЕ ТЕКСТОВОГО ПОЛЯ
+    # 4. СОХРАНЕНИЕ РЕДАКТИРУЕМОГО ПОЛЯ
     elif current_step.startswith("edit_field_"):
         field = current_step.replace("edit_field_", "")
         if field == "price" and "BYN" not in text.upper():
@@ -292,5 +293,80 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_preview(user_id, context, chat_id, text_prefix="Пункт изменен! Новый вариант:\n\n")
         return
 
-    # 5. ФИНАЛЬНОЕ МЕНЮ (Да / Редактировать / Отмена)
+    # 5. МЕНЮ ПОДТВЕРЖДЕНИЯ
     elif current_step == "final_menu":
+        action = text.lower()
+        if action == "да":
+            data = post_data[user_id]
+            if len(data.get("photos", [])) > 1:
+                media = [InputMediaPhoto(media=img) for img in data["photos"]]
+                media[0].caption = data["caption"]
+                media[0].parse_mode = ParseMode.HTML
+                await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
+            else:
+                await context.bot.send_photo(
+                    chat_id=CHANNEL_ID, photo=data["photos"][0], 
+                    caption=data["caption"], parse_mode=ParseMode.HTML
+                )
+            await update.message.reply_text("Пост отправлен в канал!✅", reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True))
+            post_data[user_id] = {"step": "menu"}
+            
+        elif action == "редактировать":
+            post_data[user_id]["step"] = "waiting_edit_choice"
+            await update.message.reply_text("Что нужно изменить?", reply_markup=ReplyKeyboardMarkup(edit_menu_keyboard, resize_keyboard=True))
+            
+        elif action in ["отмена", "нет"]:
+            post_data[user_id] = {"step": "menu"}
+            await update.message.reply_text("Создание поста отменено.", reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True))
+        else:
+            await update.message.reply_text("Используйте кнопки: Да, Редактировать или Отмена.", reply_markup=ReplyKeyboardMarkup(final_keyboard, resize_keyboard=True))
+        return
+
+    # Если мы находимся в основном меню и прилетел неизвестный текст
+    await update.message.reply_text(
+        "Для создания публикации нажмите кнопку «пост».", 
+        reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True)
+    )
+
+# =========================================================
+# СЕРВЕР RENDER PING
+# =========================================================
+async def handle_render_ping(reader, writer):
+    try:
+        await reader.read(100)
+        response = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello Render"
+        writer.write(response.encode())
+        await writer.drain()
+    except Exception:
+        pass
+    finally:
+        writer.close()
+
+async def start_ping_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = await asyncio.start_server(handle_render_ping, '0.0.0.0', port)
+    async with server:
+        await server.serve_forever()
+
+# =========================================================
+# ОСНОВНОЙ ЗАПУСК
+# =========================================================
+async def main():
+    if not TOKEN:
+        return
+
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, handle_message))
+
+    await app.initialize()
+    await app.start()
+
+    await asyncio.gather(
+        app.updater.start_polling(allowed_updates=Update.ALL_TYPES),
+        start_ping_server()
+    )
+
+if __name__ == "__main__":
+    asyncio.run(main())
