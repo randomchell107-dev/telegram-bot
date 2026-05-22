@@ -88,7 +88,7 @@ async def show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE, data,
         )
 
 # =========================
-#ЛОГИКА СТАРТА И ОПРОСА
+# ЛОГИКА СТАРТА И ОПРОСА
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -318,7 +318,7 @@ async def main():
             PRICE: [MessageHandler(msg_filter, handle_price)],
             SIZE: [MessageHandler(msg_filter, handle_size)],
             LEGIT: [MessageHandler(msg_filter, handle_legit)],
-            KUFAR: [MessageHandler(filters.ChatType.PRIVATE & (filters.TEXT | filters.StatusUpdate) & ~filters.COMMAND, handle_kufar)],
+            KUFAR: [MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_kufar)],
             FINAL_MENU: [MessageHandler(msg_filter, handle_final_menu)],
             EDIT_CHOICE: [MessageHandler(msg_filter, handle_edit_choice)],
             EDIT_FIELD: [
