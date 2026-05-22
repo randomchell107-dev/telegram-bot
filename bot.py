@@ -120,7 +120,7 @@ async def start_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_posts[user_id] = {"photos": []}
     await update.message.reply_text(
-        "Заполните пост пожалуйста.\n\nШаг 1: Отправьте ОДНО (главное) фото товара. Остальные можно будет добавить при редактировании.",
+        "Заполните пост пожалуйста.\n\nШаг 1: Отправьте ОДНО главное фото товара (остальные можно будет добавить позже):",
         reply_markup=ReplyKeyboardRemove()
     )
     return PHOTO
@@ -210,7 +210,7 @@ async def handle_final_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif action == "редактировать":
         await update.message.reply_text(
-            "Что нужно изменить? Чтобы ДОБАВИТЬ еще фотографии к посту, выберите пункт 'Фото'.", 
+            "Что нужно изменить? Чтобы ДОБАВИТЬ еще фотографии, выберите пункт 'Фото'.", 
             reply_markup=ReplyKeyboardMarkup(edit_menu_keyboard, resize_keyboard=True)
         )
         return EDIT_CHOICE
@@ -235,7 +235,7 @@ async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if text in fields_map:
         context.user_data["edit_field"] = fields_map[text]
         if text == "фото":
-            await update.message.reply_text("Отправьте ЕЩЁ ОДНО фото для добавления в пост (отправляйте по одному):", reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text("Отправьте ЕЩЁ ОДНО фото для добавления в пост (по одному):", reply_markup=ReplyKeyboardRemove())
         elif text == "размер":
             await update.message.reply_text("Выберите новый размер:", reply_markup=ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True))
         elif text == "легит":
@@ -260,7 +260,7 @@ async def handle_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"Фото добавлено! Всего в посте фоток: {len(user_posts[user_id]['photos'])} шт.\n"
-            "Вы можете отправить ЕЩЁ ОДНО фото или отправить команду /done , чтобы завершить редактирование картинок."
+            "Вы можете отправить ЕЩЁ ОДНО фото или отправить команду /done, чтобы закончить."
         )
         return EDIT_FIELD
     else:
