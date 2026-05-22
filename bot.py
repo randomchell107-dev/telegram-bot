@@ -3,7 +3,8 @@ import asyncio
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
-    ReplyKeyboardRemove
+    ReplyKeyboardRemove,
+    InputMediaPhoto
 )
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -31,13 +32,14 @@ TRUSTED_USERS = [
 ]
 
 # =========================
-# ПАМЯТЬ
+# ПАМЯТЬ БОТА
 # =========================
 authorized_users = {}
 post_data = {}
+media_groups = {}  # Буфер для сборки альбомов из фото
 
 # =========================
-# РАЗМЕРЫ И КЛАВИАТУРА
+# КЛАВИАТУРЫ И СЛОВАРИ
 # =========================
 sizes = {
     "XS": "140см",
@@ -46,11 +48,17 @@ sizes = {
     "L": "170см",
     "XL": "180см"
 }
-# Быстрые кнопки для размеров
 size_keyboard = [["XS", "S", "M", "L", "XL"]]
+legit_keyboard = [["✅ Легит", "❌ Паль"]]
+final_keyboard = [["Да", "Редактировать"], ["Отмена"]]
+edit_menu_keyboard = [
+    ["Фото", "Заголовок", "Описание"],
+    ["Цена", "Размер", "Легит"],
+    ["Куфар"]
+]
 
 # =========================
-# ФУНКЦИЯ СБОРКИ ТЕКСТА ПОСТА
+# ФУНКЦИЯ СБОРКИ ТЕКСТА
 # =========================
 def build_caption(data):
     return (
@@ -79,29 +87,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =========================
-# ОБРАБОТКА
+# ОБРАБОТКА МНОЖЕСТВА ФОТО (АЛЬБОМ)
+# =========================
+async def process_photos_buffer(user_id, context: ContextTypes.DEFAULT_TYPE, chat_id):
+    await asyncio.sleep(1.0)  # Ждем 1 секунду, пока прилетят все фото пачки
+    if user_id in media_groups and media_groups[user_id]:
+        post_data[user_id]["photos"] = media_groups[user_id].copy()
+        media_groups[user_id] = []
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Фото успешно добавлены📸\n\nШаг 2: Введите главный заголовок вещи."
+        )
+
+# =========================
+# ГЛАВНЫЙ ОБРАБОТЧИК
 # =========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Защита от пустых апдейтов и сообщений из каналов
     if not update.message or not update.effective_user:
         return  
 
     user_id = update.effective_user.id
     text = update.message.text if update.message.text else ""
+    chat_id = update.effective_chat.id
 
     if user_id not in authorized_users:
         authorized_users[user_id] = False
-
     if user_id not in post_data:
         post_data[user_id] = {}
 
-    username = ""
-    if update.effective_user.username:
-        username = "@" + update.effective_user.username
+    username = "@" + update.effective_user.username if update.effective_user.username else ""
 
-    # =========================
-    # ПРОВЕРКА ПОДПИСКИ
-    # =========================
+    # 1. ПРОВЕРКА ПОДПИСКИ
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         if member.status not in ["member", "administrator", "creator"]:
@@ -111,31 +127,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Бот не может проверить подписку. Добавьте бота в канал администратором.")
         return
 
-    # =========================
-    # ПРОВЕРКА ПАРОЛЯ
-    # =========================
+    # 2. ПРОВЕРКА ПАРОЛЯ
     if not authorized_users[user_id]:
         if username in TRUSTED_USERS or text == ADMIN_PASSWORD:
             authorized_users[user_id] = True
             keyboard = [["пост"]]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.message.reply_text("Доступ подтверждён✅", reply_markup=reply_markup)
+            await update.message.reply_text("Доступ подтверждён✅", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
         else:
             await update.message.reply_text("Пароль неверный!")
         return
 
-    # =========================
-    # РЕЖИМ РЕДАКТИРОВАНИЯ КОНКРЕТНОГО ПУНКТА
-    # =========================
+    # =====================================================
+    # РЕЖИМ ОДИНОЧНОГО РЕДАКТИРОВАНИЯ ПОЛЯ
+    # =====================================================
     if post_data[user_id].get("editing_field"):
         field = post_data[user_id]["editing_field"]
         
         if field == "photo":
             if update.message.photo:
-                post_data[user_id]["photo"] = update.message.photo[-1].file_id
+                # Если прислали пачку фото при редактировании
+                if user_id not in media_groups:
+                    media_groups[user_id] = []
+                media_groups[user_id].append(update.message.photo[-1].file_id)
+                
+                # Запускаем таймер сборки
+                asyncio.create_task(asyncio.sleep(1.0))
+                await asyncio.sleep(1.1)
+                
+                if media_groups[user_id]:
+                    post_data[user_id]["photos"] = media_groups[user_id].copy()
+                    media_groups[user_id] = []
+                
                 post_data[user_id]["editing_field"] = None
             else:
-                await update.message.reply_text("Пожалуйста, отправьте именно фото.")
+                await update.message.reply_text("Пожалуйста, отправьте фото.")
                 return
         else:
             if not text:
@@ -152,10 +177,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 post_data[user_id]["price"] = text
             elif field == "size":
                 size_input = text.upper()
-                if size_input in sizes:
-                    post_data[user_id]["size"] = f"{size_input} ({sizes[size_input]})"
-                else:
-                    post_data[user_id]["size"] = size_input
+                post_data[user_id]["size"] = f"{size_input} ({sizes[size_input]})" if size_input in sizes else size_input
             elif field == "legit":
                 post_data[user_id]["legit"] = text
             elif field == "kufar_link":
@@ -163,23 +185,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             post_data[user_id]["editing_field"] = None
 
-        # Возвращаем предпросмотр
+        # Выводим обновленный предпросмотр
         caption = build_caption(post_data[user_id])
         post_data[user_id]["caption"] = caption
-        keyboard = [["Да", "Редактировать"], ["Отмена"]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
-        await update.message.reply_photo(
-            photo=post_data[user_id]["photo"],
-            caption=f"Пост обновлен! Вот новый вариант:\n\n{caption}\n\nВы подтверждаете отправку?",
-            parse_mode=ParseMode.HTML,
-            reply_markup=reply_markup
-        )
+        # Отправляем предпросмотр (одно фото или альбом)
+        if len(post_data[user_id].get("photos", [])) > 1:
+            media = [InputMediaPhoto(media=img) for img in post_data[user_id]["photos"]]
+            media[0].caption = f"Пост обновлен! Вот новый вариант:\n\n{caption}\n\nВы подтверждаете отправку?"
+            media[0].parse_mode = ParseMode.HTML
+            await context.bot.send_media_group(chat_id=chat_id, media=media)
+            await context.bot.send_message(chat_id=chat_id, text="Подтверждаете?", reply_markup=ReplyKeyboardMarkup(final_keyboard, resize_keyboard=True))
+        else:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=post_data[user_id]["photos"][0],
+                caption=f"Пост обновлен! Вот новый вариант:\n\n{caption}\n\nВы подтверждаете отправку?",
+                parse_mode=ParseMode.HTML,
+                reply_markup=ReplyKeyboardMarkup(final_keyboard, resize_keyboard=True)
+            )
         return
 
-    # =========================
-    # КОНСТРУКТОР: ВЫБОР ЧТО РЕДАКТИРОВАТЬ
-    # =========================
+    # =====================================================
+    # ВЫБОР ПОЛЯ ДЛЯ РЕДАКТИРОВАНИЯ
+    # =====================================================
     if post_data[user_id].get("waiting_for_edit_choice"):
         fields_map = {
             "фото": "photo", "заголовок": "title", "описание": "description",
@@ -191,149 +220,149 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             post_data[user_id]["waiting_for_edit_choice"] = False
             
             if chosen == "размер":
-                reply_markup = ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True)
-                await update.message.reply_text("Выберите новый размер на клавиатуре:", reply_markup=reply_markup)
+                await update.message.reply_text("Выберите новый размер:", reply_markup=ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True))
             elif chosen == "легит":
-                keyboard = [["Есть", "Любые проверки"]]
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                await update.message.reply_text("Введите новый статус легита или выберите кнопку:", reply_markup=reply_markup)
+                await update.message.reply_text("Выберите статус легита:", reply_markup=ReplyKeyboardMarkup(legit_keyboard, resize_keyboard=True))
             elif chosen == "фото":
-                await update.message.reply_text("Отправьте новое фото товара:", reply_markup=ReplyKeyboardRemove())
+                await update.message.reply_text("Отправьте новое фото или несколько фото товара:", reply_markup=ReplyKeyboardRemove())
             else:
                 await update.message.reply_text(f"Введите новое значение для поля [{chosen}]:", reply_markup=ReplyKeyboardRemove())
         else:
-            await update.message.reply_text("Используйте кнопки на клавиатуре для выбора поля.")
+            await update.message.reply_text("Выберите поле с помощью кнопок.")
         return
 
-    # =========================
+    # =====================================================
     # СТАРТ СОЗДАНИЯ ПОСТА
-    # =========================
-    if not post_data[user_id]:
+    # =====================================================
+    if not post_data[user_id] or text.lower() == "пост":
         if text.lower() == "пост":
-            post_data[user_id]["creating_post"] = True
+            post_data[user_id] = {"creating_post": True}
+            media_groups[user_id] = []
             await update.message.reply_text(
-                "Заполните пост пожалуйста.\n\nШаг 1: Отправьте фото товара.",
+                "Заполните пост пожалуйста.\n\nШаг 1: Отправьте фото товара (можно сразу несколько!).",
                 reply_markup=ReplyKeyboardRemove()
             )
         else:
-            keyboard = [["пост"]]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.message.reply_text("Нажмите кнопку «пост».", reply_markup=reply_markup)
+            await update.message.reply_text("Нажмите кнопку «пост».", reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True))
         return
 
-    # =========================
+    # =====================================================
     # ПОШАГОВЫЙ БЛАНКПОСТИНГ
-    # =========================
-    # 1. Фото
-    if "photo" not in post_data[user_id]:
+    # =====================================================
+    # Шаг 1: Сбор фоток (работает как для одной, так и для пачки)
+    if "photos" not in post_data[user_id]:
         if update.message.photo:
-            post_data[user_id]["photo"] = update.message.photo[-1].file_id
-            await update.message.reply_text("Шаг 2: Введите главный заголовок вещи.")
+            if user_id not in media_groups:
+                media_groups[user_id] = []
+            
+            media_groups[user_id].append(update.message.photo[-1].file_id)
+            
+            # Если это первое фото в пакете, запускаем сборщик таймаута
+            if len(media_groups[user_id]) == 1:
+                asyncio.create_task(process_photos_buffer(user_id, context, chat_id))
+            return
         else:
             await update.message.reply_text("Пожалуйста, отправьте фото товара.")
-        return
+            return
 
-    # 2. Заголовок
+    # Шаг 2: Заголовок
     if "title" not in post_data[user_id]:
         if text:
             post_data[user_id]["title"] = text
             await update.message.reply_text("Шаг 3: Введите описание вещи.")
         return
 
-    # 3. Описание
+    # Шаг 3: Описание
     if "description" not in post_data[user_id]:
         if text:
             post_data[user_id]["description"] = text
             await update.message.reply_text("Шаг 4: Введите цену.")
         return
 
-    # 4. Цена
+    # Шаг 4: Цена
     if "price" not in post_data[user_id]:
         if text:
             if "BYN" not in text.upper():
                 text = text + " BYN"
             post_data[user_id]["price"] = text
-            # Показываем кнопки размеров
-            reply_markup = ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True)
-            await update.message.reply_text("Шаг 5: Выберите размер вещи.", reply_markup=reply_markup)
+            await update.message.reply_text("Шаг 5: Выберите размер вещи.", reply_markup=ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True))
         return
 
-    # 5. Размер
+    # Шаг 5: Размер
     if "size" not in post_data[user_id]:
         if text:
             size_input = text.upper()
-            if size_input in sizes:
-                post_data[user_id]["size"] = f"{size_input} ({sizes[size_input]})"
-            else:
-                post_data[user_id]["size"] = size_input
-            
-            # Предлагаем быстрые кнопки для Легита
-            keyboard = [["Есть", "Любые проверки"]]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.message.reply_text("Шаг 6: Укажите легит (Проверка на оригинал).", reply_markup=reply_markup)
+            post_data[user_id]["size"] = f"{size_input} ({sizes[size_input]})" if size_input in sizes else size_input
+            await update.message.reply_text("Шаг 6: Легит? (Выберите кнопку ✅ или ❌)", reply_markup=ReplyKeyboardMarkup(legit_keyboard, resize_keyboard=True))
         return
 
-    # 6. Легит
+    # Шаг 6: Легит (Кнопки ✅ / ❌)
     if "legit" not in post_data[user_id]:
         if text:
             post_data[user_id]["legit"] = text
-            await update.message.reply_text("Шаг 7: Впишите свою ссылку на куфар.", reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text("Шаг 7: Впишите ссылку на Куфар.", reply_markup=ReplyKeyboardRemove())
         return
 
-    # 7. Ссылка Куфар -> Предпросмотр
+    # Шаг 7: Ссылка на Куфар -> Финальный предпросмотр
     if "kufar_link" not in post_data[user_id]:
         if text:
             post_data[user_id]["kufar_link"] = text
             caption = build_caption(post_data[user_id])
             post_data[user_id]["caption"] = caption
 
-            keyboard = [["Да", "Редактировать"], ["Отмена"]]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-            await update.message.reply_photo(
-                photo=post_data[user_id]["photo"],
-                caption=f"Вот так будет выглядеть готовый пост:\n\n{caption}\n\nВы подтверждаете отправку?",
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
-            )
+            # Отправляем предпросмотр
+            if len(post_data[user_id]["photos"]) > 1:
+                media = [InputMediaPhoto(media=img) for img in post_data[user_id]["photos"]]
+                media[0].caption = f"Вот так будет выглядеть готовый пост:\n\n{caption}\n\nВы подтверждаете отправку?"
+                media[0].parse_mode = ParseMode.HTML
+                await context.bot.send_media_group(chat_id=chat_id, media=media)
+                await context.bot.send_message(chat_id=chat_id, text="Выберите действие:", reply_markup=ReplyKeyboardMarkup(final_keyboard, resize_keyboard=True))
+            else:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=post_data[user_id]["photos"][0],
+                    caption=f"Вот так будет выглядеть готовый пост:\n\n{caption}\n\nВы подтверждаете отправку?",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=ReplyKeyboardMarkup(final_keyboard, resize_keyboard=True)
+                )
         return
 
-    # =========================
-    # МЕНЮ ФИНАЛЬНОГО ВЫБОРА
-    # =========================
+    # =====================================================
+    # ФИНАЛЬНЫЙ ВЫБОР АДМИНА (Да / Редактировать / Отмена)
+    # =====================================================
     chosen_action = text.lower()
     
     if chosen_action == "да":
         data = post_data[user_id]
-        await context.bot.send_photo(
-            chat_id=CHANNEL_ID,
-            photo=data["photo"],
-            caption=data["caption"],
-            parse_mode=ParseMode.HTML
-        )
-        keyboard = [["пост"]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text("Пост был успешно отправлен в канал✅", reply_markup=reply_markup)
+        
+        # Публикация в канал альбомом или одной фоткой
+        if len(data["photos"]) > 1:
+            media = [InputMediaPhoto(media=img) for img in data["photos"]]
+            media[0].caption = data["caption"]
+            media[0].parse_mode = ParseMode.HTML
+            await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
+        else:
+            await context.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=data["photos"][0],
+                caption=data["caption"],
+                parse_mode=ParseMode.HTML
+            )
+            
+        await update.message.reply_text("Пост был успешно отправлен в канал✅", reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True))
         post_data[user_id] = {}
 
     elif chosen_action == "редактировать":
         post_data[user_id]["waiting_for_edit_choice"] = True
-        keyboard = [
-            ["Фото", "Заголовок", "Описание"],
-            ["Цена", "Размер", "Легит"],
-            ["Куфар"]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text("Выберите, какой пункт вы хотите изменить:", reply_markup=reply_markup)
+        await update.message.reply_text("Выберите, какой пункт вы хотите изменить:", reply_markup=ReplyKeyboardMarkup(edit_menu_keyboard, resize_keyboard=True))
 
     elif chosen_action in ["отмена", "нет"]:
-        keyboard = [["пост"]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         post_data[user_id] = {}
-        await update.message.reply_text("Создание поста отменено.", reply_markup=reply_markup)
+        await update.message.reply_text("Создание поста отменено.", reply_markup=ReplyKeyboardMarkup([["пост"]], resize_keyboard=True))
         
     else:
-        await update.message.reply_text("Пожалуйста, используйте кнопки: Да, Редактировать или Отмена.")
+        # Если юзер ввел левый текст вместо нажатия кнопок Да/Редактировать
+        await update.message.reply_text("Пожалуйста, используйте кнопки на клавиатуре: Да, Редактировать или Отмена.")
 
 # =========================================================
 # АСИНХРОННЫЙ СЕРВЕР ДЛЯ RENDER
@@ -362,7 +391,7 @@ async def start_ping_server():
 # =========================================================
 async def main():
     if not TOKEN:
-        print("Ошибка: Токен бота (BOT_TOKEN) не найден!")
+        print("Ошибка: Токен бота не найден!")
         return
 
     app = Application.builder().token(TOKEN).build()
