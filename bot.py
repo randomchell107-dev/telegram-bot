@@ -88,7 +88,7 @@ async def show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE, data,
         )
 
 # =========================
-# ЛОГИКА СТАРТА И ОПРОСА
+# ЛОГИКА БОТА
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -124,7 +124,7 @@ async def start_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_posts[user_id] = {"photos": []}
     await update.message.reply_text(
-        "Заполните пост пожалуйста.\n\nШаг 1: Отправьте ОДНУ фотографию товара:",
+        "Заполните пост пожалуйста.\n\nШаг 1: Отправьте первое фото товара:",
         reply_markup=ReplyKeyboardRemove()
     )
     return PHOTO
@@ -132,13 +132,13 @@ async def start_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not update.message.photo:
-        await update.message.reply_text("Пожалуйста, отправьте именно картинку.")
+        await update.message.reply_text("Пожалуйста, отправьте именно фото.")
         return PHOTO
         
     photo_id = update.message.photo[-1].file_id
     user_posts[user_id]["photos"] = [photo_id]
     
-    await update.message.reply_text("Фото успешно добавлено📸\n\nШаг 2: Введите главный заголовок вещи.")
+    await update.message.reply_text("Фото добавлено📸\n\nШаг 2: Введите главный заголовок вещи.")
     return TITLE
 
 async def handle_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -191,7 +191,7 @@ async def handle_kufar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return FINAL_MENU
 
 # =========================
-# УПРАВЛЕНИЕ ПУБЛИКАЦИЕЙ
+# МЕНЮ ОТПРАВКИ И ИЗМЕНЕНИЙ
 # =========================
 async def handle_final_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -242,7 +242,7 @@ async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if text in fields_map:
         context.user_data["edit_field"] = fields_map[text]
         if text == "фото":
-            await update.message.reply_text("Отправьте новую фотографию товара:", reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text("Отправьте новую фотографию (или несколько по одной для добавления):", reply_markup=ReplyKeyboardRemove())
         elif text == "размер":
             await update.message.reply_text("Выберите новый размер:", reply_markup=ReplyKeyboardMarkup(size_keyboard, resize_keyboard=True))
         elif text == "легит":
@@ -262,7 +262,13 @@ async def handle_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message.photo:
             await update.message.reply_text("Пожалуйста, отправьте фото.")
             return EDIT_FIELD
-        user_posts[user_id]["photos"] = [update.message.photo[-1].file_id]
+        # Позволяет добавлять новые фото к существующим в режиме редактирования
+        photo_id = update.message.photo[-1].file_id
+        if "photos" not in user_posts[user_id]:
+            user_posts[user_id]["photos"] = []
+        user_posts[user_id]["photos"].append(photo_id)
+        await update.message.reply_text(f"Фото добавлено! Всего в посте: {len(user_posts[user_id]['photos'])} шт. Отправьте ещё или введите любой текст для возврата.")
+        return EDIT_FIELD
     else:
         text = update.message.text.strip()
         if field == "price" and "BYN" not in text.upper():
@@ -271,7 +277,7 @@ async def handle_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = f"{text.upper()} ({SIZES[text.upper()]})" if text.upper() in SIZES else text
         user_posts[user_id][field] = text
 
-    await show_preview(update, context, user_posts[user_id], text_prefix="Пункт успешно изменен! Новый вариант:\n\n")
+    await show_preview(update, context, user_posts[user_id], text_prefix="Изменения сохранены! Вариант поста:\n\n")
     return FINAL_MENU
 
 # =========================================================
@@ -295,16 +301,13 @@ async def start_ping_server():
         await server.serve_forever()
 
 # =========================================================
-# ЗАПУСК
+# ЗАПУСК БОТА
 # =========================================================
 async def main():
     if not TOKEN:
-        print("Ошибка: BOT_TOKEN не задан!")
         return
 
     app = Application.builder().token(TOKEN).build()
-
-    # Изолированный фильтр приватных сообщений без команд
     msg_filter = filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND
 
     conv_handler = ConversationHandler(
